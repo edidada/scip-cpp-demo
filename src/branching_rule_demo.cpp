@@ -185,6 +185,7 @@ static SCIP_RETCODE runSolve(int priority, bool verbose, SolveResult& out)
    SCIP_CALL( includeCustomRule(scip, priority) );
 
    SCIP_CALL( SCIPcreateProbBasic(scip, "custom_branching_knapsack") );
+   SCIP_CALL( SCIPsetObjsense(scip, SCIP_OBJSENSE_MAXIMIZE) );
 
    const int n = static_cast<int>(kItems.size());
    std::vector<SCIP_VAR*> vars(n, nullptr);

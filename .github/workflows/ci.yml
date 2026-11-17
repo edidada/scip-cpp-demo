@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SCIP_VERSION: '10.1.0'
+  SCIP_DEB: 'scipoptsuite_10.1.0-1+noble_amd64.deb'
+  SCIP_URL: 'https://www.scipopt.org/download/release/scipoptsuite_10.1.0-1+noble_amd64.deb'
+
+jobs:
+  build-and-run:
+    name: Build and run (SCIP custom branching rule)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ curl ca-certificates
+
+      - name: Restore cached SCIP SDK
+        id: cache-scip
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps/scip
+          key: ${{ runner.os }}-scip-${{ env.SCIP_VERSION }}-deb-v1
+
+      - name: Download SCIP Optimization Suite .deb
+        if: steps.cache-scip.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/.deps/scip"
+          curl -fL --retry 5 --retry-all-errors --retry-delay 5 \
+            -o "${GITHUB_WORKSPACE}/.deps/scip/${SCIP_DEB}" "${SCIP_URL}"
+          test -s "${GITHUB_WORKSPACE}/.deps/scip/${SCIP_DEB}"
+
+      - name: Install SCIP
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y "${GITHUB_WORKSPACE}/.deps/scip/${SCIP_DEB}"
+          sudo ldconfig
+          dpkg-query -W -f='installed SCIP version: ${Version}\n' scipoptsuite
+          echo "--- SCIP headers / libraries ---"
+          ls -l /usr/include/scip/scip.h /usr/include/scip/scipdefplugins.h
+          ls -l /usr/lib/libscip.so*
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel 2
+
+      - name: Test (CTest)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run (custom branching-rule demo)
+        run: |
+          set -o pipefail
+          ./build/scip_branching_demo | tee run.log
+
+      - name: Verify result marker
+        run: |
+          grep -q "BUILD_AND_RUN_OK" run.log
+          echo "OK: program compiled, ran and verified its own solution."

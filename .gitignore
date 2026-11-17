@@ -1,0 +1,4 @@
+build/
+.deps/
+run.log
+*.o

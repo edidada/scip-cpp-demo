@@ -6,7 +6,14 @@
 // This is a deliberately custom score, different from SCIP's built-in
 // mostinf / fullstrong / relpscost rules.
 //
-// The demo solves a 0-1 knapsack twice:
+// The instance is a small 3-constraint 0-1 ILP whose LP relaxation has
+// several fractional variables and an integrality gap much larger than 1.
+// That matters: SCIP detects an all-integral objective and rounds the dual
+// bound down to an integer, so a single-knapsack gap below 1 is closed at
+// the root and no branching ever happens. With this instance branching is
+// unavoidable and the custom rule has real candidates to choose from.
+//
+// The demo solves the instance twice:
 //   (A) with the custom rule at high priority,
 //   (B) with the custom rule suppressed (SCIP defaults),
 // prints each branching decision, verifies both solutions against an
@@ -32,20 +39,24 @@ namespace {
 
 struct Item {
    double profit;
-   double weight;
+   double w[3];
 };
 
+// Three "cyclic" resource types. Adding the three capacity constraints gives
+// 4 * sum(x) <= 18, i.e. sum(x) <= 4.5, while an integer solution can contain
+// at most 4 items. The LP relaxation therefore stays fractional (three
+// fractional basic variables) and its bound is far above the integer optimum.
 const std::vector<Item> kItems = {
-   { 8,  5}, {11,  7}, { 6,  4}, { 4,  3},
-   {10,  8}, { 7,  6}, { 5,  4}, { 9,  7},
-   {12,  9}, { 3,  2}, { 8,  5}, { 6,  4},
-   { 7,  6}, {10,  7}, { 4,  3}, { 5,  4},
+   {20, {2, 1, 1}}, {21, {2, 1, 1}}, {22, {2, 1, 1}}, {23, {2, 1, 1}},
+   {20, {1, 2, 1}}, {21, {1, 2, 1}}, {22, {1, 2, 1}}, {23, {1, 2, 1}},
+   {20, {1, 1, 2}}, {21, {1, 1, 2}}, {22, {1, 1, 2}}, {23, {1, 1, 2}},
 };
-constexpr double kCapacity = 30.0;
+const double kCapacity[3] = {6.0, 6.0, 6.0};
 
-constexpr const char* kRuleName       = "owi";
-constexpr int         kPriorityOn     = 1000000;
-constexpr int         kPriorityOff    = -1000000;
+constexpr const char* kRuleName    = "owi";
+constexpr int         kPriorityOn  = 1000000;
+constexpr int         kPriorityOff = -1000000;
+constexpr int         kTraceLimit  = 40;
 
 // Statistics of the custom rule, collected during a solve.
 struct RuleStats {
@@ -97,7 +108,7 @@ static SCIP_DECL_BRANCHEXECLP(branchExecLpOwi)
       return SCIP_OKAY;
    }
 
-   if( g_verbose )
+   if( g_verbose && g_stats.calls <= kTraceLimit )
    {
       std::cout << "  [owi] node=" << SCIPgetNNodes(scip)
                 << " ncands=" << ncands
@@ -135,24 +146,27 @@ static void trySetInt(SCIP* scip, const char* name, int value)
 }
 
 // Independent brute-force optimum (verification source of truth).
-static double bruteForceOptimum(const std::vector<Item>& items, double cap)
+static double bruteForceOptimum(const std::vector<Item>& items,
+                                const double cap[3])
 {
-   const std::size_t     n     = items.size();
-   const std::uint64_t   total = std::uint64_t(1) << n;
+   const std::size_t   n     = items.size();
+   const std::uint64_t total = std::uint64_t(1) << n;
    double best = 0.0;
    for( std::uint64_t mask = 0; mask < total; ++mask )
    {
-      double w = 0.0;
-      double p = 0.0;
+      double w[3] = {0.0, 0.0, 0.0};
+      double p    = 0.0;
       for( std::size_t i = 0; i < n; ++i )
       {
          if( mask & (std::uint64_t(1) << i) )
          {
-            w += items[i].weight;
-            p += items[i].profit;
+            w[0] += items[i].w[0];
+            w[1] += items[i].w[1];
+            w[2] += items[i].w[2];
+            p    += items[i].profit;
          }
       }
-      if( w <= cap && p > best )
+      if( w[0] <= cap[0] && w[1] <= cap[1] && w[2] <= cap[2] && p > best )
          best = p;
    }
    return best;
@@ -174,10 +188,8 @@ static SCIP_RETCODE runSolve(int priority, bool verbose, SolveResult& out)
    SCIP_CALL( SCIPincludeDefaultPlugins(scip) );
 
    // Keep the LP relaxation gap so the branching rule is actually exercised,
-   // and keep SCIP quiet so our own trace is readable. Without this, SCIP
-   // solves a small knapsack at the root via presolve/propagation/cuts and
-   // never enters the branching phase.
-   trySetInt(scip, "display/verblevel", 4);
+   // and keep SCIP quiet so our own trace is readable.
+   trySetInt(scip, "display/verblevel", 0);
    trySetInt(scip, "presolving/maxrounds", 0);
    trySetInt(scip, "separating/maxroundsroot", 0);
    trySetInt(scip, "separating/maxrounds", 0);
@@ -188,12 +200,11 @@ static SCIP_RETCODE runSolve(int priority, bool verbose, SolveResult& out)
    g_verbose = verbose;
    SCIP_CALL( includeCustomRule(scip, priority) );
 
-   SCIP_CALL( SCIPcreateProbBasic(scip, "custom_branching_knapsack") );
+   SCIP_CALL( SCIPcreateProbBasic(scip, "custom_branching_mip") );
    SCIP_CALL( SCIPsetObjsense(scip, SCIP_OBJSENSE_MAXIMIZE) );
 
    const int n = static_cast<int>(kItems.size());
    std::vector<SCIP_VAR*> vars(n, nullptr);
-   std::vector<SCIP_Real> weights(n, 0.0);
 
    for( int i = 0; i < n; ++i )
    {
@@ -202,15 +213,22 @@ static SCIP_RETCODE runSolve(int priority, bool verbose, SolveResult& out)
                                     0.0, 1.0, kItems[i].profit,
                                     SCIP_VARTYPE_BINARY) );
       SCIP_CALL( SCIPaddVar(scip, vars[i]) );
-      weights[i] = kItems[i].weight;
    }
 
-   SCIP_CONS* cons = nullptr;
-   SCIP_CALL( SCIPcreateConsBasicLinear(scip, &cons, "capacity", n,
-                                        vars.data(), weights.data(),
-                                        -SCIPinfinity(scip), kCapacity) );
-   SCIP_CALL( SCIPaddCons(scip, cons) );
-   SCIP_CALL( SCIPreleaseCons(scip, &cons) );
+   for( int k = 0; k < 3; ++k )
+   {
+      std::vector<SCIP_Real> coefs(n, 0.0);
+      for( int i = 0; i < n; ++i )
+         coefs[i] = kItems[i].w[k];
+
+      const std::string cname = "cap" + std::to_string(k + 1);
+      SCIP_CONS* cons = nullptr;
+      SCIP_CALL( SCIPcreateConsBasicLinear(scip, &cons, cname.c_str(), n,
+                                           vars.data(), coefs.data(),
+                                           -SCIPinfinity(scip), kCapacity[k]) );
+      SCIP_CALL( SCIPaddCons(scip, cons) );
+      SCIP_CALL( SCIPreleaseCons(scip, &cons) );
+   }
 
    SCIP_CALL( SCIPsolve(scip) );
 
@@ -242,8 +260,9 @@ int main()
 
    std::cout << "SCIP custom branching-rule demo\n";
    std::cout << "  rule      : 'owi' = (|obj|+1) * min(frac, 1-frac)\n";
-   std::cout << "  instance  : 0-1 knapsack, n=" << kItems.size()
-             << ", capacity=" << kCapacity << '\n';
+   std::cout << "  instance  : 3-constraint 0-1 ILP, n=" << kItems.size()
+             << ", capacities=(" << kCapacity[0] << ", " << kCapacity[1]
+             << ", " << kCapacity[2] << ")\n";
    std::cout << "  brute force optimum = " << expected << "\n\n";
 
    std::cout << "=== (A) custom rule enabled (priority " << kPriorityOn << ") ===\n";
@@ -253,6 +272,7 @@ int main()
       std::cerr << "SCIP error in solve A\n";
       return 1;
    }
+   std::cout << "  ... (trace capped at " << kTraceLimit << " decisions)\n";
    std::cout << "  status=" << a.status << " objective=" << a.objective
              << " nodes=" << a.nodes
              << " rule_calls=" << a.ruleCalls
@@ -281,19 +301,25 @@ int main()
       ok = false;
    }
 
-   double w = 0.0;
-   double p = 0.0;
+   double w[3] = {0.0, 0.0, 0.0};
+   double p    = 0.0;
    for( std::size_t i = 0; i < a.solution.size(); ++i )
    {
       if( a.solution[i] > 0.5 )
       {
-         w += kItems[i].weight;
-         p += kItems[i].profit;
+         w[0] += kItems[i].w[0];
+         w[1] += kItems[i].w[1];
+         w[2] += kItems[i].w[2];
+         p    += kItems[i].profit;
       }
    }
-   std::cout << "  solution weight=" << w << " / " << kCapacity
-             << " profit=" << p << '\n';
-   if( w > kCapacity + 1e-6 || std::fabs(p - expected) > 1e-6 )
+   std::cout << "  solution resource usage = (" << w[0] << ", " << w[1]
+             << ", " << w[2] << ") / (" << kCapacity[0] << ", "
+             << kCapacity[1] << ", " << kCapacity[2] << ")  profit=" << p << '\n';
+   if( w[0] > kCapacity[0] + 1e-6 ||
+       w[1] > kCapacity[1] + 1e-6 ||
+       w[2] > kCapacity[2] + 1e-6 ||
+       std::fabs(p - expected) > 1e-6 )
    {
       std::cerr << "ERROR: reported solution is infeasible or suboptimal\n";
       ok = false;

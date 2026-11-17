@@ -174,11 +174,15 @@ static SCIP_RETCODE runSolve(int priority, bool verbose, SolveResult& out)
    SCIP_CALL( SCIPincludeDefaultPlugins(scip) );
 
    // Keep the LP relaxation gap so the branching rule is actually exercised,
-   // and keep SCIP quiet so our own trace is readable.
+   // and keep SCIP quiet so our own trace is readable. Without this, SCIP
+   // solves a small knapsack at the root via presolve/propagation/cuts and
+   // never enters the branching phase.
    trySetInt(scip, "display/verblevel", 0);
    trySetInt(scip, "presolving/maxrounds", 0);
    trySetInt(scip, "separating/maxroundsroot", 0);
    trySetInt(scip, "separating/maxrounds", 0);
+   trySetInt(scip, "propagating/maxroundsroot", 0);
+   trySetInt(scip, "propagating/maxrounds", 0);
 
    g_stats   = RuleStats{};
    g_verbose = verbose;
@@ -298,7 +302,10 @@ int main()
    std::cout << "\n  nodes  custom=" << a.nodes << "  default=" << b.nodes
              << "  (difference shows the custom rule's effect)\n";
    if( a.ruleBranched == 0 )
-      std::cout << "  [note] custom rule did not branch; SCIP solved at the root\n";
+   {
+      std::cerr << "ERROR: the custom branching rule was never executed\n";
+      ok = false;
+   }
 
    if( !ok )
    {

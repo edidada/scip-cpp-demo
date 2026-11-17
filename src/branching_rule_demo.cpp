@@ -177,7 +177,7 @@ static SCIP_RETCODE runSolve(int priority, bool verbose, SolveResult& out)
    // and keep SCIP quiet so our own trace is readable. Without this, SCIP
    // solves a small knapsack at the root via presolve/propagation/cuts and
    // never enters the branching phase.
-   trySetInt(scip, "display/verblevel", 0);
+   trySetInt(scip, "display/verblevel", 4);
    trySetInt(scip, "presolving/maxrounds", 0);
    trySetInt(scip, "separating/maxroundsroot", 0);
    trySetInt(scip, "separating/maxrounds", 0);
